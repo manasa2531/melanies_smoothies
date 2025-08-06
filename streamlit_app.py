@@ -1,74 +1,63 @@
-import streamlit
-import pandas
+import streamlit as st
 import requests
-import snowflake.connector
-from urllib.error import URLError
+from snowflake.snowpark.functions import col
 
-streamlit.title('My Parents Healthy Diner')
-streamlit.header('Breakfast Menu')
-streamlit.text('🥣 Omega 3 & Blueberry Oatmeal')
-streamlit.text('🥗 Kale, Spinach & Rocket Smoothie')
-streamlit.text('🐔 Hard-Boiled Free-Range Egg')
-streamlit.text('🥑🍞Avacado Toast')
+# Write directly to the app
+st.title("Customize Your Smoothie :cup_with_straw:")
+st.write(
+    """
+    Choose the fruits you want in your custom Smoothie!
+    """
+)
 
-streamlit.header('🍌🥭 Build Your Own Fruit Smoothie 🥝🍇')
+# User input for name on order
+name_on_order = st.text_input("Name on Smoothie")
+st.write("The name on your smoothie will be: ", name_on_order)
 
-
-my_fruit_list = pandas.read_csv("https://uni-lab-files.s3.us-west-2.amazonaws.com/dabw/fruit_macros.txt")
-my_fruit_list = my_fruit_list.set_index('Fruit')
-#fruityvice_response = requests.get("https://fruityvice.com/api/fruit/watermelon")
-
-fruits_selected = streamlit.multiselect("Pick some fruits:",list(my_fruit_list.index),['Avocado','Strawberries'])
-fruits_to_show = my_fruit_list.loc[fruits_selected]
-#streamlit.dataframe(my_fruit_list)
-streamlit.dataframe(fruits_to_show)
-
-streamlit.header("Fruityvice Fruit Advice!")
-#streamlit.text(fruityvice_response.json())
-
-def get_fruityvice_data(this_fruit_choice):
-  fruityvice_response = requests.get("https://fruityvice.com/api/fruit/"+this_fruit_choice)
-  fruityvice_normalized = pandas.json_normalize(fruityvice_response.json())
-  return fruityvice_normalized
 try:
-  fruit_choice = streamlit.text_input('What fruit would you like information about?','Kiwi')
-  if not fruit_choice:
-    streamlit.error("Please select a fruit to get information.")
-  else:
-    #streamlit.write('The user entered ', fruit_choice)
-    back_from_function = get_fruityvice_data(fruit_choice)
-    streamlit.dataframe(back_from_function)
-except URLError as e:
-  streamlit.error()
+    # Establish connection to Snowflake (assuming st.connection is correctly defined)
+    cnx = st.connection("snowflake")
+    session = cnx.session()
 
-#my_cur.execute("SELECT CURRENT_USER(), CURRENT_ACCOUNT(), CURRENT_REGION()")
-#my_data_row = my_cur.fetchone()
-#streamlit.text("Hello from Snowflake:")
-#streamlit.text(my_data_row)
-#my_data_row = my_cur.fetchone()
+    # Retrieve fruit options from Snowflake
+    my_dataframe = session.table("smoothies.public.fruit_options").select(col("FRUIT_NAME"))
 
-streamlit.header("The Fruit Load List contains:")
+    # Multi-select for choosing ingredients
+    ingredients_list = st.multiselect('Choose up to 5 ingredients:', my_dataframe, max_selections=5)
 
-def get_fruit_load_list():
-  with my_cnx.cursor() as my_cur:
-    my_cur.execute("SELECT * FROM pc_rivery_db.public.fruit_load_list")
-    return my_cur.fetchall()
+    # Process ingredients selection
+    if ingredients_list:
+        ingredients_string = ' '.join(ingredients_list)  # Join selected ingredients into a single string
+        for fruit_chosen in ingredients_list:
+            try:
+                # Make API request to get details about each fruit
+                fruityvice_response = requests.get("https://fruityvice.com/api/fruit/" + fruit_chosen)
+                fruityvice_response.raise_for_status()  # Raise an error for bad responses (4xx or 5xx)
+                
+                if fruityvice_response.status_code == 200:
+                    fv_df = st.dataframe(data=fruityvice_response.json(), use_container_width=True)
+                else:
+                    st.warning(f"Failed to fetch details for {fruit_chosen}")
+            
+            except requests.exceptions.RequestException as e:
+                st.error(f"Failed to fetch details for {fruit_chosen}: {str(e)}")
 
-if streamlit.button('Get Fruit Load List'):
-  my_cnx = snowflake.connector.connect(**streamlit.secrets["snowflake"])
-  my_data_row = get_fruit_load_list()
-  streamlit.dataframe(my_data_row)
+        # SQL statement to insert order into database (assuming proper handling of SQL injection risk)
+        my_insert_stmt = """INSERT INTO smoothies.public.orders(ingredients, name_on_order)
+                            VALUES ('{}', '{}')""".format(ingredients_string, name_on_order)
 
-def insert_row_snowflake(new_fruit):
-    with my_cnx.cursor() as my_cur:
-      my_cur.execute("insert into fruit_load_list values('"+ new_fruit +"')");
-      return "Thanks for adding "+ new_fruit
-  
-add_my_fruit = streamlit.text_input('What fruit would you like to add?')
-if streamlit.button('Add a Fruit to the List'):
-  my_cnx = snowflake.connector.connect(**streamlit.secrets["snowflake"])
-  back_from_function = insert_row_snowflake(add_my_fruit)
-  streamlit.text(back_from_function)
-  
-#streamlit.write('Thanks for adding ', fruit_selected)
-#response = requests.put("https://fruityvice.com/api/fruit/", json=fruit_selected)
+        # Button to submit order
+        time_to_insert = st.button('Submit Order')
+        if time_to_insert:
+            try:
+                # Execute SQL insert statement
+                session.sql(my_insert_stmt).collect()
+                st.success('Your Smoothie is ordered, ' + name_on_order + '!', icon="✅")
+            except Exception as e:
+                st.error(f"Failed to submit order: {str(e)}")
+
+except Exception as ex:
+    st.error(f"An error occurred: {str(ex)}")
+
+# Display a link
+st.write("https://github.com/appuv")
